@@ -54,7 +54,7 @@ public class VPService {
 
     // TODO: Change this to your actual Ngrok/Server URL
     private static final String BASE_URL = "https://test.ewallets.ngrok.app";
-    private static final String RESPONSE_URI = BASE_URL + "/api/wallet/callback";
+    private static final String RESPONSE_URI = BASE_URL + "/api/v2/callback";
 
     @PostConstruct
     public void init() {
@@ -134,7 +134,7 @@ public class VPService {
         String requestObjId = UUID.randomUUID().toString();
         requestObjectStore.put(requestObjId, requestJwt);
 
-        String requestUri = BASE_URL + "/api/wallet/request/" + requestObjId;
+        String requestUri = BASE_URL + "/api/v2/request/" + requestObjId;
 
         sessionStore.put(state, new HashMap<>(Map.of("status", "PENDING", "nonce", nonce)));
 
