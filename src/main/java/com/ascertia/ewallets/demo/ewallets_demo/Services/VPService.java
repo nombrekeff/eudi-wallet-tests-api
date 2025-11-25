@@ -6,6 +6,7 @@ import com.nimbusds.jose.*;
 import com.nimbusds.jose.crypto.ECDSASigner;
 import com.nimbusds.jose.jwk.Curve;
 import com.nimbusds.jose.jwk.ECKey;
+import com.nimbusds.jose.jwk.KeyUse;
 import com.nimbusds.jose.util.Base64;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
@@ -99,35 +100,60 @@ public class VPService {
         String nonce = UUID.randomUUID().toString();
         String state = UUID.randomUUID().toString();
 
-        // 1. Create the DCQL Query (The modern replacement for Presentation Definition)
+        // 1. DCQL Query
         Map<String, Object> dcqlQuery = createDcqlQuery();
 
-        // 2. Client Metadata (Must include JWKS for encryption if using direct_post.jwt)
-        Map<String, Object> jwks = new HashMap<>();
-        jwks.put("keys", List.of(verifierJWK.toPublicJWK().toJSONObject()));
+        // 2. Prepare Encryption Key (CRITICAL FIX)
+        // We reuse the verifier's public key but MUST tag it for ENCRYPTION ('enc')
+        // so the wallet knows it can use this key to encrypt the response.
+        ECKey encryptionKey = new ECKey.Builder(verifierJWK.getCurve(), verifierJWK.toECPublicKey())
+                .keyID(verifierJWK.getKeyID())
+                .keyUse(KeyUse.ENCRYPTION) // <--- REQUIRED: "use": "enc"
+                .algorithm(JWEAlgorithm.ECDH_ES) // <--- REQUIRED: "alg": "ECDH-ES"
+                .build();
 
+        Map<String, Object> jwks = new HashMap<>();
+        jwks.put("keys", List.of(encryptionKey.toPublicJWK().toJSONObject()));
+
+        // 3. Client Metadata (Matching Official Verifier)
         Map<String, Object> clientMetadata = new HashMap<>();
         clientMetadata.put("client_name", "Demo Verifier");
         clientMetadata.put("client_uri", BASE_URL);
         clientMetadata.put("jwks", jwks);
-        // Encryption algorithms supported by your verifier
-        clientMetadata.put("authorization_encrypted_response_alg", "ECDH-ES");
-        clientMetadata.put("authorization_encrypted_response_enc", "A256GCM");
 
-        // 3. JWT Construction
-        // Note: 'client_id_scheme' can remain 'redirect_uri' if your cert SAN matches the URL.
-        // The official verifier uses 'x509_san_sha256' which is more complex, but 'redirect_uri' is standard.
+        // Encryption Params (JARM)
+        clientMetadata.put("authorization_encrypted_response_alg", "ECDH-ES");
+        clientMetadata.put("authorization_encrypted_response_enc", "A128GCM"); // Official verifier used A128GCM
+
+        // Supported Lists (Helps the wallet validation pass)
+        clientMetadata.put("authorization_encrypted_response_alg_values_supported", List.of("ECDH-ES"));
+        clientMetadata.put("authorization_encrypted_response_enc_values_supported", List.of("A128GCM", "A256GCM"));
+
+        // VP Formats (Required by EUDI Wallet Kit)
+        Map<String, Object> vpFormats = Map.of(
+                "dc+sd-jwt", Map.of(
+                        "sd-jwt_alg_values", List.of("ES256", "ES384", "ES512"),
+                        "kb-jwt_alg_values", List.of("ES256", "ES384", "ES512")
+                ),
+                "mso_mdoc", Map.of(
+                        "alg", List.of("ES256", "ES384", "ES512", "EdDSA")
+                )
+        );
+        clientMetadata.put("vp_formats_supported", vpFormats);
+
+
+        // 4. JWT Construction
         JWTClaimsSet claimsSet = new JWTClaimsSet.Builder()
                 .issuer(RESPONSE_URI)
                 .audience("https://self-issued.me/v2")
                 .claim("client_id", RESPONSE_URI)
-                .claim("client_id_scheme", "redirect_uri") // Keep this if your cert setup relies on it
+                .claim("client_id_scheme", "redirect_uri")
                 .claim("response_type", "vp_token")
-                .claim("response_mode", "direct_post.jwt") // EUDI Wallets prefer Encrypted JWT responses
+                .claim("response_mode", "direct_post.jwt") // Requesting Encrypted Response
                 .claim("response_uri", RESPONSE_URI)
                 .claim("nonce", nonce)
                 .claim("state", state)
-                .claim("dcql_query", dcqlQuery) // <--- INJECT DCQL HERE
+                .claim("dcql_query", dcqlQuery)
                 .claim("client_metadata", clientMetadata)
                 .issueTime(Date.from(Instant.now()))
                 .expirationTime(Date.from(Instant.now().plusSeconds(600)))
@@ -145,6 +171,8 @@ public class VPService {
         String requestObjId = UUID.randomUUID().toString();
         requestObjectStore.put(requestObjId, requestJwt);
         String requestUri = BASE_URL + "/api/wallet/request/" + requestObjId;
+
+        sessionStore.put(state, new HashMap<>(Map.of("status", "PENDING", "nonce", nonce)));
 
         // 4. Deep Link
         String deeplink= "eudi-openid4vp://?" +
@@ -268,50 +296,6 @@ public class VPService {
                 "submission_requirements", List.of(submissionRequirement)
         );
     }
-//    private Map<String, Object> createPidPresentationDefinition() {
-//        Map<String, Object> constraints = Map.of(
-//                "fields", List.of(
-//                        Map.of(
-//                                "path", List.of(
-//                                        // SD-JWT / JWT paths
-//                                        "$.credentialSubject.family_name",
-//                                        "$.credentialSubject.name_family",
-//                                        // mDoc paths (Namespace: eu.europa.ec.eudi.pid.1)
-//                                        "$['eu.europa.ec.eudi.pid.1']['family_name']"
-//                                ),
-//                                "intent_to_retain", false
-//                        ),
-//                        Map.of(
-//                                "path", List.of(
-//                                        // SD-JWT / JWT paths
-//                                        "$.credentialSubject.given_name",
-//                                        "$.credentialSubject.name_given",
-//                                        // mDoc paths
-//                                        "$['eu.europa.ec.eudi.pid.1']['given_name']"
-//                                ),
-//                                "intent_to_retain", false
-//                        )
-//                )
-//        );
-//
-//        Map<String, Object> inputDescriptor = new HashMap<>();
-//        inputDescriptor.put("id", "eu.europa.ec.eudi.pid.1");
-//        inputDescriptor.put("name", "EUDI PID");
-//        inputDescriptor.put("purpose", "Verify Identity");
-//        inputDescriptor.put("constraints", constraints);
-//
-//        // FORMATS
-//        inputDescriptor.put("format", Map.of(
-//                "dc+sd-jwt", Map.of("alg", List.of("ES256", "ES384", "ES512")),
-//                "vc+sd-jwt", Map.of("alg", List.of("ES256", "ES384", "ES512")),
-//                "mso_mdoc",  Map.of("alg", List.of("ES256", "ES384", "ES512", "EdDSA"))
-//        ));
-//
-//        return Map.of(
-//                "id", UUID.randomUUID().toString(),
-//                "input_descriptors", List.of(inputDescriptor)
-//        );
-//    }
 
     public String getRequestJwt(String id) {
         return requestObjectStore.get(id);
