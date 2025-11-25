@@ -142,7 +142,7 @@ class WaltIdOpenId4VpService {
             .claim("client_id_scheme", "redirect_uri")
             .claim("response_type", "vp_token")
             .claim("response_mode", "direct_post")
-            .claim("response_uri", "$RESPONSE_URI/$state")
+            .claim("response_uri", RESPONSE_URI)
             .claim("nonce", nonce)
             .claim("state", state)
             .claim("dcql_query", dcqlQuery)
