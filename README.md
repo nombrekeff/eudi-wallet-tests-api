@@ -4,7 +4,7 @@ This Proof of Concept (PoC) demonstrates a Spring Boot-based Verifier that imple
 
 This implementation supports:
 *   **Query Language**: DCQL (Digital Credentials Query Language)
-*   **Formats**: SD-JWT (`dc+sd-jwt`) and ISO mDoc (`mso_mdoc`)
+*   **Formats**: SD-JWT (`dc+sd-jwt`) and ISO mDoc (`mso_mdoc`, not yet supported herin this poc)
 *   **Security**: JARM (JWT Secured Authorization Response Mode) with ECDH-ES encryption.
 
 ## Prerequisites
@@ -25,6 +25,8 @@ This implementation supports:
     ngrok http 8080
     ```
     Copy the HTTPS URL (e.g., `https://1234-56-78.ngrok-free.app`). You will need this for the configuration.
+> ⚠️ Ideally, use a paid Ngrok plan to reserve a static URL. Free plans may change the URL on each restart.
+> ⚠️ If you change the URL, you will need to regenerate the Verifier Identity Certificate in step 3.
 
 3.  **Generate the Verifier Identity Certificate**
     The Verifier needs an Identity Certificate to sign requests and decrypt responses. The Subject Alternative Name (SAN) of this certificate **MUST** match your Ngrok callback URL exactly.
@@ -74,14 +76,14 @@ This implementation supports:
 To test the PoC, you need a compliant EUDI Wallet.
 
 1.  **Install the Wallet**
-    *   **iOS**: EUDI Wallet Reference App (TestFlight) (or search for "EUDI Wallet" if available)
-    *   **Android**: EUDI Wallet Reference App (Check repo for APK or Play Store link)
+    *   **iOS**: https://eu-digital-identity-wallet.github.io/Test/Wallet%20Application/iOS
+    *   **Android**: https://eu-digital-identity-wallet.github.io/Test/Wallet%20Application/Android
 
 2.  **Load Test Credentials**
-    *   Open the wallet and load the "PID" (Person Identification Data) test credential.
-    *   Go to `Settings` -> `Developer Menu`.
-    *   Look for "Load Test Data" or "Add PID".
-    *   Ensure you have a PID credential visible in your dashboard.
+    *  Open the wallet and create a new the "PID" (Person Identification Data) test credential. In the **sd-jwt VC** format.
+    *  Ensure the credential contains at least the `family_name` and `given_name` claims.
+    *  Save the credential in the wallet.
+
 
 3.  **Scan and Verify**
     *   Open the Wallet app.
