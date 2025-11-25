@@ -19,6 +19,10 @@ target/
 *.iml
 *.ipr
 
+verifier.cer
+verifier.der
+*.p12
+
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
