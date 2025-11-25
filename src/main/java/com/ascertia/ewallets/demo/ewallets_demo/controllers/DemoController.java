@@ -40,7 +40,8 @@ public class DemoController {
     @GetMapping(value = "/create-request-qr", produces = MediaType.IMAGE_PNG_VALUE)
     public ResponseEntity<byte[]> createRequestQR() {
         try {
-            String deepLink = vpService.createAuthorizationRequest();
+            VPService.AuthRequestResult result = vpService.createAuthorizationRequest();
+            String deepLink = result.deepLink();
             System.out.println("Generated DeepLink: " + deepLink);
             byte[] png = generateQRCodePng(deepLink, 300, 300);
             return ResponseEntity.ok().contentType(MediaType.IMAGE_PNG).body(png);
@@ -49,6 +50,17 @@ public class DemoController {
             return ResponseEntity.internalServerError().build();
         }
     }
+
+    @GetMapping(value = "/create-request")
+    public ResponseEntity<VPService.AuthRequestResult> createRequest() {
+        try {
+            return ResponseEntity.ok(vpService.createAuthorizationRequest());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
 
     // --- WALLET ENDPOINTS ---
 
