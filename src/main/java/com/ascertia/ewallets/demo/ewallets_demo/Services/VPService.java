@@ -1,4 +1,4 @@
-package com.ascertia.ewallets.demo.ewallets_demo.Services;
+package com.ascertia.ewallets.demo.ewallets_demo.services;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -138,13 +138,13 @@ public class VPService {
 
         sessionStore.put(state, new HashMap<>(Map.of("status", "PENDING", "nonce", nonce)));
 
-        String deepLink = generateDeeplink(requestUri);
+        String deepLink = generateDeeplink(requestUri, RESPONSE_URI + "/" + state);
 
         return new AuthRequestResult(deepLink, requestJwt, claimsSet);
     }
 
-    private static String generateDeeplink(String requestUri) {
-        return "eudi-openid4vp://?" + "client_id=" + URLEncoder.encode("redirect_uri:" + RESPONSE_URI, StandardCharsets.UTF_8) + "&request_uri=" + URLEncoder.encode(requestUri, StandardCharsets.UTF_8);
+    private static String generateDeeplink(String requestUri, String redirectUri) throws Exception {
+        return "eudi-openid4vp://?" + "client_id=" + URLEncoder.encode("redirect_uri:" + redirectUri, StandardCharsets.UTF_8) + "&request_uri=" + URLEncoder.encode(requestUri, StandardCharsets.UTF_8);
     }
 
     private static JWTClaimsSet getJwtClaimsSet(String nonce, String state, Map<String, Object> dcqlQuery, Map<String, Object> clientMetadata) {
@@ -155,7 +155,7 @@ public class VPService {
                 .claim("client_id_scheme", "redirect_uri")
                 .claim("response_type", "vp_token")
                 .claim("response_mode", "direct_post.jwt")
-                .claim("response_uri", RESPONSE_URI)
+                .claim("response_uri", RESPONSE_URI + "/" + state)
                 .claim("nonce", nonce)
                 .claim("state", state)
                 .claim("dcql_query", dcqlQuery)

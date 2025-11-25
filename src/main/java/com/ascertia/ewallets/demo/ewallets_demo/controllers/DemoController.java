@@ -1,8 +1,6 @@
 package com.ascertia.ewallets.demo.ewallets_demo.controllers;
 
-import com.ascertia.ewallets.demo.ewallets_demo.Services.VPService;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ascertia.ewallets.demo.ewallets_demo.services.VPService;
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.MultiFormatWriter;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
