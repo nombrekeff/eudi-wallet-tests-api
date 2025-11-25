@@ -3,11 +3,13 @@ package com.ascertia.ewallets.demo.ewallets_demo.Services;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.*;
+import com.nimbusds.jose.crypto.ECDHDecrypter;
 import com.nimbusds.jose.crypto.ECDSASigner;
 import com.nimbusds.jose.jwk.Curve;
 import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.jwk.KeyUse;
 import com.nimbusds.jose.util.Base64;
+import com.nimbusds.jwt.EncryptedJWT;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import jakarta.annotation.PostConstruct;
@@ -175,7 +177,7 @@ public class VPService {
         sessionStore.put(state, new HashMap<>(Map.of("status", "PENDING", "nonce", nonce)));
 
         // 4. Deep Link
-        String deeplink= "eudi-openid4vp://?" +
+        String deeplink = "eudi-openid4vp://?" +
                 "client_id=" + URLEncoder.encode("redirect_uri:" + RESPONSE_URI, StandardCharsets.UTF_8) +
                 "&request_uri=" + URLEncoder.encode(requestUri, StandardCharsets.UTF_8);
 
@@ -301,7 +303,44 @@ public class VPService {
         return requestObjectStore.get(id);
     }
 
+    /**
+     * Decrypts the JARM response from the Wallet.
+     *
+     * @param response The encrypted JWT string received from the wallet.
+     * @return The claims (containing vp_token, presentation_submission, etc.)
+     */
+    public Map<String, Object> decryptJarmResponse(String response) throws Exception {
+        logger.info("Decrypting JARM response...");
+
+        // 1. Parse the Encrypted JWT (JWE)
+        EncryptedJWT encryptedJWT = EncryptedJWT.parse(response);
+
+        // 2. Decrypt it using your Verifier Private Key
+        // We use ECDHDecrypter because we specified "ECDH-ES" in client_metadata
+        ECDHDecrypter decrypter = new ECDHDecrypter(verifierJWK.toECPrivateKey());
+        encryptedJWT.decrypt(decrypter);
+
+        // 3. Get the Payload (which is a Signed JWT)
+        SignedJWT signedJWT = encryptedJWT.getPayload().toSignedJWT();
+        if (signedJWT == null) {
+            throw new Exception("Payload is not a Signed JWT!");
+        }
+
+        logger.info("JARM Decrypted. Header: " + signedJWT.getHeader().toString());
+
+        // 4. (Optional but Recommended) Verify the Wallet's Signature
+        // The Wallet usually includes its public key in the 'sub_jwk' claim or 'x5c' header.
+        // For this PoC, we will extract the claims first.
+        JWTClaimsSet claims = signedJWT.getJWTClaimsSet();
+
+        // Log the raw data for debugging
+        logger.info("JARM Claims: " + claims.toJSONObject());
+
+        return claims.toJSONObject();
+    }
+
     public void processWalletResponse(String vpToken, String presentationSubmission, String state) {
+        System.out.println();
         System.out.println(">>> WALLET CALLBACK RECEIVED <<<");
         System.out.println("State: " + state);
         System.out.println("Token Content: " + (vpToken != null ? "PRESENT" : "NULL"));
