@@ -10,7 +10,9 @@ import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.jwk.KeyUse;
 import com.nimbusds.jose.util.Base64;
 import com.nimbusds.jwt.EncryptedJWT;
+import com.nimbusds.jwt.JWT;
 import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.JWTParser;
 import com.nimbusds.jwt.SignedJWT;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -22,7 +24,6 @@ import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
-import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.ECPublicKey;
@@ -41,6 +42,7 @@ public class VPService {
     private ECKey verifierJWK;
     private List<Base64> x5cChain;
 
+    // TODO: Change this to your actual Ngrok/Server URL
     private static final String BASE_URL = "https://test.ewallets.ngrok.app";
     private static final String RESPONSE_URI = BASE_URL + "/api/wallet/callback";
 
@@ -63,21 +65,6 @@ public class VPService {
             X509Certificate cert = (X509Certificate) keystore.getCertificate("verifier");
             ECPrivateKey privateKey = (ECPrivateKey) keystore.getKey("verifier", "password".toCharArray());
             ECPublicKey publicKey = (ECPublicKey) cert.getPublicKey();
-
-            // Check SAN match (Critical for 'redirect_uri' scheme)
-            boolean sanMatch = false;
-            if (cert.getSubjectAlternativeNames() != null) {
-                for (List<?> san : cert.getSubjectAlternativeNames()) {
-                    // Type 6 = URI
-                    if (san.get(0).equals(6) && san.get(1).toString().startsWith(BASE_URL)) {
-                        sanMatch = true;
-                    }
-                }
-            }
-
-            if (!sanMatch) {
-                System.err.println("--- WARNING: Certificate SAN does not match BASE_URL ---");
-            }
 
             x5cChain = new ArrayList<>();
             x5cChain.add(Base64.encode(cert.getEncoded()));
@@ -105,29 +92,25 @@ public class VPService {
         // 1. DCQL Query
         Map<String, Object> dcqlQuery = createDcqlQuery();
 
-        // 2. Prepare Encryption Key (CRITICAL FIX)
-        // We reuse the verifier's public key but MUST tag it for ENCRYPTION ('enc')
-        // so the wallet knows it can use this key to encrypt the response.
+        // 2. Prepare Encryption Key (CRITICAL: "use": "enc")
         ECKey encryptionKey = new ECKey.Builder(verifierJWK.getCurve(), verifierJWK.toECPublicKey())
                 .keyID(verifierJWK.getKeyID())
-                .keyUse(KeyUse.ENCRYPTION) // <--- REQUIRED: "use": "enc"
-                .algorithm(JWEAlgorithm.ECDH_ES) // <--- REQUIRED: "alg": "ECDH-ES"
+                .keyUse(KeyUse.ENCRYPTION)
+                .algorithm(JWEAlgorithm.ECDH_ES)
                 .build();
 
         Map<String, Object> jwks = new HashMap<>();
         jwks.put("keys", List.of(encryptionKey.toPublicJWK().toJSONObject()));
 
-        // 3. Client Metadata (Matching Official Verifier)
+        // 3. Client Metadata
         Map<String, Object> clientMetadata = new HashMap<>();
         clientMetadata.put("client_name", "Demo Verifier");
         clientMetadata.put("client_uri", BASE_URL);
         clientMetadata.put("jwks", jwks);
 
-        // Encryption Params (JARM)
+        // JARM Encryption Params
         clientMetadata.put("authorization_encrypted_response_alg", "ECDH-ES");
-        clientMetadata.put("authorization_encrypted_response_enc", "A128GCM"); // Official verifier used A128GCM
-
-        // Supported Lists (Helps the wallet validation pass)
+        clientMetadata.put("authorization_encrypted_response_enc", "A128GCM");
         clientMetadata.put("authorization_encrypted_response_alg_values_supported", List.of("ECDH-ES"));
         clientMetadata.put("authorization_encrypted_response_enc_values_supported", List.of("A128GCM", "A256GCM"));
 
@@ -142,7 +125,6 @@ public class VPService {
                 )
         );
         clientMetadata.put("vp_formats_supported", vpFormats);
-
 
         // 4. JWT Construction
         JWTClaimsSet claimsSet = new JWTClaimsSet.Builder()
@@ -176,17 +158,16 @@ public class VPService {
 
         sessionStore.put(state, new HashMap<>(Map.of("status", "PENDING", "nonce", nonce)));
 
-        // 4. Deep Link
-        String deeplink = "eudi-openid4vp://?" +
+        // 5. Deep Link
+        String deepLink = "eudi-openid4vp://?" +
                 "client_id=" + URLEncoder.encode("redirect_uri:" + RESPONSE_URI, StandardCharsets.UTF_8) +
                 "&request_uri=" + URLEncoder.encode(requestUri, StandardCharsets.UTF_8);
 
-        return new AuthRequestResult(deeplink, requestJwt, claimsSet);
+        return new AuthRequestResult(deepLink, requestJwt, claimsSet);
     }
 
-    // --- NEW DCQL GENERATION METHOD ---
     private Map<String, Object> createDcqlQuery() {
-        // Query 1: SD-JWT PID (Matches the official verifier example)
+        // SD-JWT PID Query
         Map<String, Object> sdJwtQuery = new HashMap<>();
         sdJwtQuery.put("id", "pid_sd_jwt");
         sdJwtQuery.put("format", "dc+sd-jwt");
@@ -197,157 +178,81 @@ public class VPService {
                 Map.of("path", List.of("birthdate"))
         ));
 
-        // Query 2: mDoc PID (ISO 18013-5)
-        // Note: mDoc uses 'doctype_values' and [namespace, element] paths
+        // mDoc PID Query
         Map<String, Object> mdocQuery = new HashMap<>();
         mdocQuery.put("id", "pid_mdoc");
         mdocQuery.put("format", "mso_mdoc");
         mdocQuery.put("meta", Map.of("doctype_values", List.of("eu.europa.ec.eudi.pid.1")));
         mdocQuery.put("claims", List.of(
                 Map.of("path", List.of("eu.europa.ec.eudi.pid.1", "family_name")),
-                Map.of("path", List.of("eu.europa.ec.eudi.pid.1", "given_name")),
-                Map.of("path", List.of("eu.europa.ec.eudi.pid.1", "birth_date"))
+                Map.of("path", List.of("eu.europa.ec.eudi.pid.1", "given_name"))
         ));
 
-        // Combine them.
-        // NOTE: Sending BOTH in the array might interpret as "I want BOTH credentials".
-        // To support "Either/Or", advanced DCQL logic is needed, but for a PoC,
-        // it is safer to ask for the one you want to test.
-        // UNCOMMENT 'mdocQuery' below to test mdoc, or send both if you want to see if the wallet handles multi-credential requests.
         return Map.of(
                 "credentials", List.of(
                         sdJwtQuery
-                        // , mdocQuery // <--- Uncomment this line to also ask for mDoc
+                        // , mdocQuery // Uncomment to test mDoc instead or in addition
                 )
         );
     }
 
-    private Map<String, Object> createPidPresentationDefinition() {
-        // --- 1. Define Input Descriptor for mdoc (ISO 18013-5) ---
-        Map<String, Object> mdocConstraints = Map.of(
-                "limit_disclosure", "required",
-                "fields", List.of(
-                        // Filter: Must be a PID mdoc
-                        Map.of(
-                                "path", List.of("$.docType"), // Standard path for docType check
-                                "filter", Map.of("type", "string", "const", "eu.europa.ec.eudi.pid.1")
-                        ),
-                        // Data: Family Name
-                        Map.of(
-                                "path", List.of("$['eu.europa.ec.eudi.pid.1']['family_name']"),
-                                "intent_to_retain", false
-                        ),
-                        // Data: Given Name
-                        Map.of(
-                                "path", List.of("$['eu.europa.ec.eudi.pid.1']['given_name']"),
-                                "intent_to_retain", false
-                        )
-                )
-        );
+    /**
+     * Decrypts a JARM (JWE) response from the wallet.
+     */
+    public Map<String, Object> decryptJarmResponse(String encryptedResponse) throws Exception {
+        logger.info("Decrypting JARM JWE...");
 
-        Map<String, Object> mdocDescriptor = new HashMap<>();
-        mdocDescriptor.put("id", "pid-mdoc");
-        mdocDescriptor.put("group", List.of("alternative_A")); // Grouping for "Pick 1" logic
-        mdocDescriptor.put("format", Map.of(
-                "mso_mdoc", Map.of("alg", List.of("ES256", "ES384", "ES512", "EdDSA"))
-        ));
-        mdocDescriptor.put("constraints", mdocConstraints);
+        // 1. Parse JWE
+        EncryptedJWT encryptedJWT = EncryptedJWT.parse(encryptedResponse);
 
-        // --- 2. Define Input Descriptor for SD-JWT ---
-        Map<String, Object> sdJwtConstraints = Map.of(
-                "limit_disclosure", "required",
-                "fields", List.of(
-                        // Filter: Must be a PID SD-JWT (Check your issuer's exact VCT string)
-                        Map.of(
-                                "path", List.of("$.vct"),
-                                "filter", Map.of("type", "string", "const", "urn:eu.europa.ec.eudi.pid.1")
-                        ),
-                        // Data: Family Name
-                        Map.of(
-                                "path", List.of("$.credentialSubject.family_name", "$.credentialSubject.name_family"),
-                                "intent_to_retain", false
-                        ),
-                        // Data: Given Name
-                        Map.of(
-                                "path", List.of("$.credentialSubject.given_name", "$.credentialSubject.name_given"),
-                                "intent_to_retain", false
-                        )
-                )
-        );
+        // 2. Decrypt using our Private Key
+        ECDHDecrypter decrypter = new ECDHDecrypter(verifierJWK.toECPrivateKey());
+        encryptedJWT.decrypt(decrypter);
 
-        Map<String, Object> sdJwtDescriptor = new HashMap<>();
-        sdJwtDescriptor.put("id", "pid-sdjwt");
-        sdJwtDescriptor.put("group", List.of("alternative_A"));
-        sdJwtDescriptor.put("format", Map.of(
-                "dc+sd-jwt", Map.of("alg", List.of("ES256", "ES384", "ES512")),
-                "vc+sd-jwt", Map.of("alg", List.of("ES256", "ES384", "ES512"))
-        ));
-        sdJwtDescriptor.put("constraints", sdJwtConstraints);
+        // 3. Extract the Inner Payload. It might be a Signed JWT (JWS) or just a JWT.
+        // The payload is a STRING which is another JWT.
+        Payload payload = encryptedJWT.getPayload();
 
-        // --- 3. Submission Requirements (Logic: OR) ---
-        Map<String, Object> submissionRequirement = Map.of(
-                "rule", "pick",
-                "count", 1,
-                "from", "alternative_A",
-                "name", "EUDI PID Selection"
-        );
+        // Try to parse the payload as a JWT object (generic)
+        JWT innerJwt;
+        try {
+            innerJwt = JWTParser.parse(payload.toString());
+        } catch (java.text.ParseException e) {
+            // Fallback: Maybe the wallet sent just the JSON claims directly inside the JWE?
+            // (Not standard JARM, but possible in some implementations)
+            logger.warn("Inner payload is not a JWT string. Trying JSON...");
+            return payload.toJSONObject();
+        }
 
-        return Map.of(
-                "id", UUID.randomUUID().toString(),
-                "input_descriptors", List.of(mdocDescriptor, sdJwtDescriptor),
-                "submission_requirements", List.of(submissionRequirement)
-        );
+        if (innerJwt instanceof SignedJWT) {
+            logger.info("Inner payload IS a SignedJWT. Extracting claims...");
+            return innerJwt.getJWTClaimsSet().toJSONObject();
+        } else {
+            logger.info("Inner payload is a PlainJWT (Unsigned). Extracting claims...");
+            return innerJwt.getJWTClaimsSet().toJSONObject();
+        }
     }
 
     public String getRequestJwt(String id) {
         return requestObjectStore.get(id);
     }
 
-    /**
-     * Decrypts the JARM response from the Wallet.
-     *
-     * @param response The encrypted JWT string received from the wallet.
-     * @return The claims (containing vp_token, presentation_submission, etc.)
-     */
-    public Map<String, Object> decryptJarmResponse(String response) throws Exception {
-        logger.info("Decrypting JARM response...");
-
-        // 1. Parse the Encrypted JWT (JWE)
-        EncryptedJWT encryptedJWT = EncryptedJWT.parse(response);
-
-        // 2. Decrypt it using your Verifier Private Key
-        // We use ECDHDecrypter because we specified "ECDH-ES" in client_metadata
-        ECDHDecrypter decrypter = new ECDHDecrypter(verifierJWK.toECPrivateKey());
-        encryptedJWT.decrypt(decrypter);
-
-        // 3. Get the Payload (which is a Signed JWT)
-        SignedJWT signedJWT = encryptedJWT.getPayload().toSignedJWT();
-        if (signedJWT == null) {
-            throw new Exception("Payload is not a Signed JWT!");
-        }
-
-        logger.info("JARM Decrypted. Header: " + signedJWT.getHeader().toString());
-
-        // 4. (Optional but Recommended) Verify the Wallet's Signature
-        // The Wallet usually includes its public key in the 'sub_jwk' claim or 'x5c' header.
-        // For this PoC, we will extract the claims first.
-        JWTClaimsSet claims = signedJWT.getJWTClaimsSet();
-
-        // Log the raw data for debugging
-        logger.info("JARM Claims: " + claims.toJSONObject());
-
-        return claims.toJSONObject();
-    }
-
     public void processWalletResponse(String vpToken, String presentationSubmission, String state) {
-        System.out.println();
-        System.out.println(">>> WALLET CALLBACK RECEIVED <<<");
+        System.out.println(">>> PROCESSING RESPONSE <<<");
         System.out.println("State: " + state);
-        System.out.println("Token Content: " + (vpToken != null ? "PRESENT" : "NULL"));
+
+        // Here you would normally:
+        // 1. Validate the nonce matches sessionStore.get(state).nonce
+        // 2. Verify the vpToken signature (SD-JWT or mDoc CBOR)
 
         if (sessionStore.containsKey(state)) {
-            sessionStore.get(state).put("status", "RECEIVED");
-            sessionStore.get(state).put("raw_token", vpToken);
+            Map<String, Object> session = sessionStore.get(state);
+            session.put("status", "RECEIVED");
+            session.put("raw_token", vpToken);
+            session.put("submission", presentationSubmission);
+            logger.info("Session updated for state: " + state);
+        } else {
+            logger.warn("Received response for unknown state: " + state);
         }
     }
 
