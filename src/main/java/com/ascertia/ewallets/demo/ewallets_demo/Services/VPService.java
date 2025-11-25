@@ -1,6 +1,7 @@
 package com.ascertia.ewallets.demo.ewallets_demo.Services;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.JsonNode; // Import for parsing disclosures
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.*;
 import com.nimbusds.jose.crypto.ECDHDecrypter;
@@ -89,10 +90,8 @@ public class VPService {
         String nonce = UUID.randomUUID().toString();
         String state = UUID.randomUUID().toString();
 
-        // 1. DCQL Query
         Map<String, Object> dcqlQuery = createDcqlQuery();
 
-        // 2. Prepare Encryption Key (CRITICAL: "use": "enc")
         ECKey encryptionKey = new ECKey.Builder(verifierJWK.getCurve(), verifierJWK.toECPublicKey())
                 .keyID(verifierJWK.getKeyID())
                 .keyUse(KeyUse.ENCRYPTION)
@@ -102,19 +101,16 @@ public class VPService {
         Map<String, Object> jwks = new HashMap<>();
         jwks.put("keys", List.of(encryptionKey.toPublicJWK().toJSONObject()));
 
-        // 3. Client Metadata
         Map<String, Object> clientMetadata = new HashMap<>();
         clientMetadata.put("client_name", "Demo Verifier");
         clientMetadata.put("client_uri", BASE_URL);
         clientMetadata.put("jwks", jwks);
 
-        // JARM Encryption Params
         clientMetadata.put("authorization_encrypted_response_alg", "ECDH-ES");
         clientMetadata.put("authorization_encrypted_response_enc", "A128GCM");
         clientMetadata.put("authorization_encrypted_response_alg_values_supported", List.of("ECDH-ES"));
         clientMetadata.put("authorization_encrypted_response_enc_values_supported", List.of("A128GCM", "A256GCM"));
 
-        // VP Formats (Required by EUDI Wallet Kit)
         Map<String, Object> vpFormats = Map.of(
                 "dc+sd-jwt", Map.of(
                         "sd-jwt_alg_values", List.of("ES256", "ES384", "ES512"),
@@ -126,14 +122,13 @@ public class VPService {
         );
         clientMetadata.put("vp_formats_supported", vpFormats);
 
-        // 4. JWT Construction
         JWTClaimsSet claimsSet = new JWTClaimsSet.Builder()
                 .issuer(RESPONSE_URI)
                 .audience("https://self-issued.me/v2")
                 .claim("client_id", RESPONSE_URI)
                 .claim("client_id_scheme", "redirect_uri")
                 .claim("response_type", "vp_token")
-                .claim("response_mode", "direct_post.jwt") // Requesting Encrypted Response
+                .claim("response_mode", "direct_post.jwt")
                 .claim("response_uri", RESPONSE_URI)
                 .claim("nonce", nonce)
                 .claim("state", state)
@@ -158,7 +153,6 @@ public class VPService {
 
         sessionStore.put(state, new HashMap<>(Map.of("status", "PENDING", "nonce", nonce)));
 
-        // 5. Deep Link
         String deepLink = "eudi-openid4vp://?" +
                 "client_id=" + URLEncoder.encode("redirect_uri:" + RESPONSE_URI, StandardCharsets.UTF_8) +
                 "&request_uri=" + URLEncoder.encode(requestUri, StandardCharsets.UTF_8);
@@ -167,7 +161,6 @@ public class VPService {
     }
 
     private Map<String, Object> createDcqlQuery() {
-        // SD-JWT PID Query
         Map<String, Object> sdJwtQuery = new HashMap<>();
         sdJwtQuery.put("id", "pid_sd_jwt");
         sdJwtQuery.put("format", "dc+sd-jwt");
@@ -178,58 +171,29 @@ public class VPService {
                 Map.of("path", List.of("birthdate"))
         ));
 
-        // mDoc PID Query
-        Map<String, Object> mdocQuery = new HashMap<>();
-        mdocQuery.put("id", "pid_mdoc");
-        mdocQuery.put("format", "mso_mdoc");
-        mdocQuery.put("meta", Map.of("doctype_values", List.of("eu.europa.ec.eudi.pid.1")));
-        mdocQuery.put("claims", List.of(
-                Map.of("path", List.of("eu.europa.ec.eudi.pid.1", "family_name")),
-                Map.of("path", List.of("eu.europa.ec.eudi.pid.1", "given_name"))
-        ));
-
         return Map.of(
-                "credentials", List.of(
-                        sdJwtQuery
-                        // , mdocQuery // Uncomment to test mDoc instead or in addition
-                )
+                "credentials", List.of(sdJwtQuery)
         );
     }
 
-    /**
-     * Decrypts a JARM (JWE) response from the wallet.
-     */
     public Map<String, Object> decryptJarmResponse(String encryptedResponse) throws Exception {
         logger.info("Decrypting JARM JWE...");
-
-        // 1. Parse JWE
         EncryptedJWT encryptedJWT = EncryptedJWT.parse(encryptedResponse);
-
-        // 2. Decrypt using our Private Key
         ECDHDecrypter decrypter = new ECDHDecrypter(verifierJWK.toECPrivateKey());
         encryptedJWT.decrypt(decrypter);
-
-        // 3. Extract the Inner Payload. It might be a Signed JWT (JWS) or just a JWT.
-        // The payload is a STRING which is another JWT.
         Payload payload = encryptedJWT.getPayload();
-
-        // Try to parse the payload as a JWT object (generic)
-        JWT innerJwt;
         try {
-            innerJwt = JWTParser.parse(payload.toString());
+            JWT innerJwt = JWTParser.parse(payload.toString());
+            if (innerJwt instanceof SignedJWT) {
+                logger.info("Inner payload IS a SignedJWT. Extracting claims...");
+                return innerJwt.getJWTClaimsSet().toJSONObject();
+            } else {
+                logger.info("Inner payload is a PlainJWT (Unsigned). Extracting claims...");
+                return innerJwt.getJWTClaimsSet().toJSONObject();
+            }
         } catch (java.text.ParseException e) {
-            // Fallback: Maybe the wallet sent just the JSON claims directly inside the JWE?
-            // (Not standard JARM, but possible in some implementations)
-            logger.warn("Inner payload is not a JWT string. Trying JSON...");
+            logger.warn("Inner payload is NOT a JWT string. Assuming direct JSON payload...");
             return payload.toJSONObject();
-        }
-
-        if (innerJwt instanceof SignedJWT) {
-            logger.info("Inner payload IS a SignedJWT. Extracting claims...");
-            return innerJwt.getJWTClaimsSet().toJSONObject();
-        } else {
-            logger.info("Inner payload is a PlainJWT (Unsigned). Extracting claims...");
-            return innerJwt.getJWTClaimsSet().toJSONObject();
         }
     }
 
@@ -237,22 +201,76 @@ public class VPService {
         return requestObjectStore.get(id);
     }
 
+    // --- DATA EXTRACTION LOGIC ---
     public void processWalletResponse(String vpToken, String presentationSubmission, String state) {
-        System.out.println(">>> PROCESSING RESPONSE <<<");
-        System.out.println("State: " + state);
+        System.out.println(">>> PROCESSING RESPONSE for State: " + state + " <<<");
 
-        // Here you would normally:
-        // 1. Validate the nonce matches sessionStore.get(state).nonce
-        // 2. Verify the vpToken signature (SD-JWT or mDoc CBOR)
+        Map<String, Object> extractedData = new HashMap<>();
+
+        if (vpToken != null) {
+            if (vpToken.contains("~")) {
+                // Case 1: SD-JWT (Format: IssuerJWT~Disclosure1~Disclosure2~...~EndJWT)
+                System.out.println("Format: SD-JWT detected. " + vpToken);
+                extractSdJwtClaims(vpToken, extractedData);
+            } else if (vpToken.startsWith("ey")) {
+                // Case 2: Standard JWT
+                System.out.println("Format: Standard JWT detected.");
+                // Add JWT parsing if needed
+            } else {
+                // Case 3: mDoc (CBOR Base64) - Requires 'jackson-dataformat-cbor'
+                System.out.println("Format: mDoc (Binary/CBOR) detected.");
+                System.out.println("NOTE: To parse mDoc, you need 'jackson-dataformat-cbor' dependency.");
+                extractedData.put("raw_mdoc", vpToken);
+            }
+        }
 
         if (sessionStore.containsKey(state)) {
             Map<String, Object> session = sessionStore.get(state);
             session.put("status", "RECEIVED");
             session.put("raw_token", vpToken);
+            session.put("extracted_data", extractedData); // <--- Store extracted names
             session.put("submission", presentationSubmission);
-            logger.info("Session updated for state: " + state);
+            logger.info("Session updated. Extracted Data: " + extractedData);
         } else {
             logger.warn("Received response for unknown state: " + state);
+        }
+    }
+
+    private void extractSdJwtClaims(String sdJwt, Map<String, Object> output) {
+        try {
+            String[] parts = sdJwt.split("~");
+            System.out.println("SD-JWT Parts: " + parts.length);
+
+            // Iterate over disclosures (Indices 1 to N-1)
+            for (int i = 1; i < parts.length; i++) {
+                String disclosure = parts[i];
+                if (disclosure.isEmpty()) continue;
+
+                try {
+                    // Disclosures are Base64URL encoded JSON arrays: ["salt", "key", "value"]
+                    byte[] decodedBytes = com.nimbusds.jose.util.Base64URL.from(disclosure).decode();
+                    String jsonStr = new String(decodedBytes);
+
+                    // Parse JSON Array
+                    if (jsonStr.startsWith("[")) {
+                        JsonNode node = objectMapper.readTree(jsonStr);
+                        if (node.isArray() && node.size() >= 3) {
+                            String key = node.get(1).asText();
+                            JsonNode valueNode = node.get(2);
+
+                            // Check for the specific keys you want
+                            if ("family_name".equals(key) || "given_name".equals(key)) {
+                                System.out.println("FOUND CLAIM: " + key + " = " + valueNode.asText());
+                                output.put(key, valueNode.asText());
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    // Ignore parts that aren't disclosures (like the Key Binding JWT at the end)
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error parsing SD-JWT: " + e.getMessage());
         }
     }
 
