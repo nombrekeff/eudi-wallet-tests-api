@@ -79,6 +79,11 @@
             <version>9.37.3</version>
         </dependency>
 
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-cbor</artifactId>
+        </dependency>
+
         <!--        <dependency>-->
         <!--            <groupId>org.projectlombok</groupId>-->
         <!--            <artifactId>lombok</artifactId>-->

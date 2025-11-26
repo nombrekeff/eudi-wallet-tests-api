@@ -2,8 +2,10 @@ package com.ascertia.ewallets.demo.ewallets_demo.services;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonNode; // Import for parsing disclosures
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.cbor.databind.CBORMapper;
+
 import com.nimbusds.jose.*;
 import com.nimbusds.jose.crypto.ECDHDecrypter;
 import com.nimbusds.jose.crypto.ECDSASigner;
@@ -16,6 +18,7 @@ import com.nimbusds.jwt.JWT;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.JWTParser;
 import com.nimbusds.jwt.SignedJWT;
+
 import jakarta.annotation.PostConstruct;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -23,7 +26,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.bind.annotation.RequestParam;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -37,32 +39,43 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
+// TODO: try using liobraries like 'com.authzee:sd-jwt-lib' for SD-JWT parsing, and generating the requests.
+//  if not, implement light request generation and SD-JWT parsing directly here, but make classes and structures for type safety.
+
+// TODO: Separate the VPService into smaller services: KeyManagementService, RequestService, ResponseService, etc.
+// TODO: Create models for the request and response structures for type safety.
+// TODO: Add proper error handling and logging throughout the service.
+// TODO: Make everything configurable via application.properties or environment variables.
+// TODO: Add unit and integration tests for all functionalities.
+// TODO: Add request builder of sorts for the DCQL queries and claims.
+// TODO: Abstract all cryptographic operations into a separate utility class or service.
+// TODO: Abstract the request generation and response handling
+
 @Service
 public class VPService {
     private static final Logger logger = LoggerFactory.getLogger(VPService.class);
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // In-memory stores for sessions and request objects: in production, use a persistent store / vault
     private final Map<String, Map<String, Object>> sessionStore = new ConcurrentHashMap<>();
     private final Map<String, String> requestObjectStore = new ConcurrentHashMap<>();
+    private final CBORMapper cborMapper = new CBORMapper(); // For parsing mDoc
 
-    private final String verifierP12Location = "verifier.p12";
-    private final String verifierP12Password = "password";
-    private final String verifierKeyID = "verifier-key-1";
 
     private ECKey verifierJWK;
     private List<Base64> x5cChain;
 
-    // TODO: Change this to your actual Ngrok/Server URL
     private static final String BASE_URL = "https://test.ewallets.ngrok.app";
     private static final String RESPONSE_URI = BASE_URL + "/api/wallet/callback";
+    private static final String verifierP12Location = "verifier.p12";
+    private static final String verifierP12Password = "password";
+    private static final String verifierKeyID = "verifier-key-1";
 
     @PostConstruct
     public void init() {
         objectMapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
         loadIdentity();
-    }
-
-    public record AuthRequestResult(String deepLink, String requestJwt, JWTClaimsSet claimsSet) {
     }
 
     /**
@@ -93,7 +106,8 @@ public class VPService {
                     .Builder(Curve.P_256, publicKey)
                     .privateKey(privateKey)
                     .keyID(verifierKeyID)
-                    .x509CertChain(x5cChain).build();
+                    .x509CertChain(x5cChain)
+                    .build();
 
             logger.info("Identity Loaded. Client ID: " + RESPONSE_URI);
 
@@ -147,7 +161,12 @@ public class VPService {
         return "eudi-openid4vp://?" + "client_id=" + URLEncoder.encode("redirect_uri:" + redirectUri, StandardCharsets.UTF_8) + "&request_uri=" + URLEncoder.encode(requestUri, StandardCharsets.UTF_8);
     }
 
-    private static JWTClaimsSet getJwtClaimsSet(String nonce, String state, Map<String, Object> dcqlQuery, Map<String, Object> clientMetadata) {
+    private static JWTClaimsSet getJwtClaimsSet(
+            String nonce,
+            String state,
+            Map<String, Object> dcqlQuery,
+            Map<String, Object> clientMetadata
+    ) {
         return new JWTClaimsSet.Builder()
                 .issuer(RESPONSE_URI)
                 .audience("https://self-issued.me/v2")
@@ -195,8 +214,23 @@ public class VPService {
      * @return A map representing the DCQL query.
      */
     private Map<String, Object> createDcqlQuery() {
-        Map<String, Object> sdJwtQuery = new HashMap<>();
+//        "org.iso.23220.2.photoid.1", "urn:eudi:pid:1", "urn:eudi:pid:1", "urn:eudi:pid:1", "eu.europa.ec.eudi.pid.1", "urn:eudi:pid:1", "urn:eudi:pid:1", "urn:eudi:pid:1", "urn:eudi:pid:1", "urn:eudi:pid:1", "urn:eudi:pid:1", "urn:eudi:pid:1"
+//        var queryBuilder = new DcqlBuild();
+//        queryBuilder.credential("pid_sd_jwt")
+//                .format(DcqlFormat.DC_SD_JWT)
+////              .meta("vct_values", List.of("urn:eudi:pid:1")) // Meta can be added automatically based on credential ID
+//                .claimPath("family_name")
+//                .claimPath("given_name")
+//                .claimPath("birthdate");
+//
+//        queryBuilder.credential("id_photo_card")
+//                .format(DcqlFormat.MSO_MDOC)
+////               .meta("doctype_value", "org.iso.23220.photoid.1") // Meta can be added automatically based on credential ID
+//                .claimPath("family_name") // Will add if and path org namespace automatically
+//                .claimPath("given_name")
+//                .claimPath("birthdate");
 
+        Map<String, Object> sdJwtQuery = new HashMap<>();
         sdJwtQuery.put("id", "pid_sd_jwt");
         sdJwtQuery.put("format", "dc+sd-jwt");
         sdJwtQuery.put("meta", Map.of(
@@ -209,7 +243,30 @@ public class VPService {
                 )
         );
 
-        return Map.of("credentials", List.of(sdJwtQuery));
+        Map<String, Object> msoMdocQuery = new HashMap<>();
+        msoMdocQuery.put("id", "mdl-id");
+        msoMdocQuery.put("format", "mso_mdoc");
+        msoMdocQuery.put("meta", Map.of(
+                "doctype_value", "org.iso.18013.5.1.mDL")
+        );
+        msoMdocQuery.put("claims", List.of(
+                        Map.of("id", "family_name", "path", List.of("org.iso.18013.5.1", "family_name")),
+                        Map.of("id", "given_name", "path", List.of("org.iso.18013.5.1", "given_name")),
+                        Map.of("id", "portrait", "path", List.of("org.iso.18013.5.1", "portrait"))
+                )
+        );
+
+
+        return Map.of(
+                "credentials", List.of(
+                        msoMdocQuery
+//                        sdJwtQuery
+//                        , msoMdocQuery
+                ),
+                "credential_set", List.of(
+                        Map.of("options", List.of("photo_card", "pid_sd_jwt"))
+                )
+        );
     }
 
     /**
@@ -256,13 +313,6 @@ public class VPService {
     }
 
 
-    /**
-     * Handles the wallet's callback response containing the VP token.
-     *
-     * @param params  The request parameters (form data or URL params).
-     * @param request The HTTP servlet request.
-     * @return A ResponseEntity indicating success or failure.
-     */
     public ResponseEntity<String> handleWalletResponse(String pathId, Map<String, String> params, HttpServletRequest request) {
         logger.info(">>> WALLET CALLBACK HIT (POST) <<<");
         logger.info("pathId: {}", pathId);
@@ -273,8 +323,6 @@ public class VPService {
         String jarmResponse = null;
 
         try {
-            // 1. EXTRACT RAW DATA (Params vs Body)
-            // Strategy A: URL Params / Form Data (Standard for direct_post)
             if (params != null && !params.isEmpty()) {
                 vpToken = params.get("vp_token");
                 presentationSubmission = params.get("presentation_submission");
@@ -282,55 +330,43 @@ public class VPService {
                 jarmResponse = params.get("response");
             }
 
-            // Strategy B: JSON Body (Fallback for some wallets or custom flows)
             if (vpToken == null && jarmResponse == null && request.getContentType() != null && request.getContentType().contains("json")) {
                 try {
                     StringBuilder buffer = new StringBuilder();
                     BufferedReader reader = request.getReader();
+
                     String line;
                     while ((line = reader.readLine()) != null) buffer.append(line);
 
                     String jsonStr = buffer.toString();
                     if (!jsonStr.isEmpty()) {
-                        Map<String, Object> json = objectMapper.readValue(jsonStr, new TypeReference<>() {
-                        });
-                        if (json.containsKey("vp_token")) vpToken = json.get("vp_token").toString();
+                        Map<String, Object> json = objectMapper
+                                .readValue(jsonStr, new TypeReference<>() {
+                                });
+
                         if (json.containsKey("response")) jarmResponse = json.get("response").toString();
                         if (json.containsKey("state")) state = json.get("state").toString();
+                        if (json.containsKey("vp_token")) {
+                            vpToken = extractTokenString(json.get("vp_token"));
+                        }
                     }
                 } catch (Exception e) {
-                    System.out.println("JSON Body parse failed: " + e.getMessage());
+                    logger.info("JSON Body parse failed: {}", e.getMessage());
                 }
             }
 
-            // If state wasn't in the body, try the path parameter
             if (state == null && pathId != null && !pathId.isEmpty()) {
                 state = pathId;
             }
 
-            System.out.println("Extracted Data - vp_token: " + (vpToken));
-            System.out.println("Extracted Data - state: " + (state));
-            System.out.println("Extracted Data - jarmResponse: " + (jarmResponse));
-
-            // 2. PROCESS DATA (JARM Decryption if needed)
             if (jarmResponse != null) {
-                System.out.println("Status: Encrypted JARM received.");
+                logger.info("Status: Encrypted JARM received.");
                 try {
-                    // DECRYPT using VPService
                     Map<String, Object> claims = decryptJarmResponse(jarmResponse);
+                    if (claims.containsKey("state")) state = (String) claims.get("state");
 
-                    // Update state from inside the encrypted token (safest source)
-                    if (claims.containsKey("state")) {
-                        state = (String) claims.get("state");
-                    }
-
-                    // Extract vp_token (Can be String for SD-JWT or List for multiple)
                     Object tokenObj = claims.get("vp_token");
-                    if (tokenObj instanceof List) {
-                        vpToken = ((List<?>) tokenObj).getFirst().toString(); // Simplified: Take first
-                    } else if (tokenObj != null) {
-                        vpToken = tokenObj.toString();
-                    }
+                    vpToken = extractTokenString(tokenObj);
 
                     Object submissionObj = claims.get("presentation_submission");
                     if (submissionObj != null) {
@@ -342,108 +378,157 @@ public class VPService {
                 }
             }
 
-            // 3. FINAL VALIDATION & HANDOFF
             if (vpToken != null && state != null) {
-                System.out.println("Status: Valid Token Extracted.");
-                System.out.println("Token Length: " + vpToken.length());
-                System.out.println("State: " + state);
-
-                // Pass to Service to update session status
+                logger.info("Status: Valid Token Extracted.");
                 processWalletResponse(vpToken, presentationSubmission, state);
-
                 return ResponseEntity.ok("Verified");
             }
 
-            System.err.println("Error: No valid 'vp_token' or 'response' found in request.");
             return ResponseEntity.badRequest().body("Invalid Request: No token found");
-
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body("Server Error processing callback");
         }
     }
 
-    /**
-     * Processes the wallet's VP token response.
-     *
-     * @param vpToken                The VP token received from the wallet.
-     * @param presentationSubmission The presentation submission data (if any).
-     * @param state                  The state parameter to correlate the session.
-     */
+    // --- Helper to extract actual token string from nested structure ---
+    private String extractTokenString(Object tokenObj) {
+        switch (tokenObj) {
+            case null -> {
+                return null;
+            }
+            case String s -> {
+                return s;
+            }
+            case List<?> list -> {
+                if (!list.isEmpty()) return extractTokenString(list.getFirst()); // Recurse
+            }
+            default -> {
+            }
+        }
+
+        if (tokenObj instanceof Map<?, ?> map && !map.isEmpty()) {
+            // Usually { "id": ["token"] } or { "id": "token" }
+            // We take the first value found
+            return extractTokenString(map.values().iterator().next()); // Recurse
+        }
+
+        return tokenObj.toString();
+    }
+
     public void processWalletResponse(String vpToken, String presentationSubmission, String state) {
-        System.out.println(">>> PROCESSING RESPONSE for State: " + state + " <<<");
+        logger.info(">>> PROCESSING RESPONSE for State: {} <<<", state);
+
+        // Sanitize token string
+        String cleanToken = vpToken.trim().replace(" ", "");
+
+        // Remove potential surrounding quotes from bad stringification
+        if (cleanToken.startsWith("\"") && cleanToken.endsWith("\"")) {
+            cleanToken = cleanToken.substring(1, cleanToken.length() - 1);
+        }
 
         Map<String, Object> extractedData = new HashMap<>();
 
-        if (vpToken != null) {
-            if (vpToken.contains("~")) {
-                // Case 1: SD-JWT (Format: IssuerJWT~Disclosure1~Disclosure2~...~EndJWT)
-                System.out.println("Format: SD-JWT detected. " + vpToken);
-                extractSdJwtClaims(vpToken, extractedData);
-            } else if (vpToken.startsWith("ey")) {
-                // Case 2: Standard JWT
-                System.out.println("Format: Standard JWT detected.");
-                // Add JWT parsing if needed
-            } else {
-                // Case 3: mDoc (CBOR Base64) - Requires 'jackson-dataformat-cbor'
-                System.out.println("Format: mDoc (Binary/CBOR) detected.");
-                System.out.println("NOTE: To parse mDoc, you need 'jackson-dataformat-cbor' dependency.");
-                extractedData.put("raw_mdoc", vpToken);
-            }
+        if (cleanToken.contains("~")) {
+            logger.info("Format: SD-JWT detected.");
+            extractSdJwtClaims(cleanToken, extractedData);
+        } else {
+            logger.info("Format: mDoc (Binary/CBOR) detected.");
+            extractMdocData(cleanToken, extractedData);
         }
 
         if (sessionStore.containsKey(state)) {
             Map<String, Object> session = sessionStore.get(state);
             session.put("status", "RECEIVED");
-            session.put("raw_token", vpToken);
-            session.put("extracted_data", extractedData); // <--- Store extracted names
+            session.put("raw_token", cleanToken);
+            session.put("extracted_data", extractedData);
             session.put("submission", presentationSubmission);
-            logger.info("Session updated. Extracted Data: " + extractedData);
+            logger.info("Session updated. Extracted Data: {}", extractedData);
         } else {
-            logger.warn("Received response for unknown state: " + state);
+            logger.warn("Received response for unknown state: {}", state);
         }
     }
 
-    /**
-     * Extracts claims from an SD-JWT formatted VP token.
-     *
-     * @param sdJwt  The SD-JWT string.
-     * @param output The map to store extracted claims.
-     */
     private void extractSdJwtClaims(String sdJwt, Map<String, Object> output) {
         try {
             String[] parts = sdJwt.split("~");
-            System.out.println("SD-JWT Parts: " + parts.length);
 
-            // Iterate over disclosures (Indices 1 to N-1)
             for (int i = 1; i < parts.length; i++) {
                 String disclosure = parts[i];
+
                 if (disclosure.isEmpty()) continue;
 
                 try {
-                    // Disclosures are Base64URL encoded JSON arrays: ["salt", "key", "value"]
                     byte[] decodedBytes = com.nimbusds.jose.util.Base64URL.from(disclosure).decode();
                     String jsonStr = new String(decodedBytes);
 
-                    // Parse JSON Array
-                    if (jsonStr.startsWith("[")) {
-                        JsonNode node = objectMapper.readTree(jsonStr);
-                        if (node.isArray() && node.size() >= 3) {
-                            String key = node.get(1).asText();
-                            JsonNode valueNode = node.get(2);
+                    if (!jsonStr.startsWith("[")) continue;
 
-                            // Check for the specific keys you want
-                            if ("family_name".equals(key) || "given_name".equals(key)) {
-                                System.out.println("FOUND CLAIM: " + key + " = " + valueNode.asText());
-                                output.put(key, valueNode.asText());
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    // Ignore parts that aren't disclosures (like the Key Binding JWT at the end)
+                    JsonNode node = objectMapper.readTree(jsonStr);
+                    if (node == null || !node.isArray() || node.size() < 3) continue;
+
+                    String key = node.get(1).asText();
+                    JsonNode valueNode = node.get(2);
+                    output.put(key, valueNode.asText());
+                } catch (Exception ignored) {
                 }
             }
         } catch (Exception e) {
-            System.err.println("Error parsing SD-JWT: " + e.getMessage());
+            logger.error("Error parsing SD-JWT: {}", e.getMessage());
+        }
+    }
+
+    private void extractMdocData(String vpToken, Map<String, Object> output) {
+        try {
+            // Decode Base64 URL Safe string to bytes
+            byte[] mdocBytes = java.util.Base64.getUrlDecoder().decode(vpToken);
+
+            // Parse outer CBOR structure
+            JsonNode root = cborMapper.readTree(mdocBytes);
+
+            // Structure: documents -> [0] -> issuerSigned -> nameSpaces
+            JsonNode documents = root.get("documents");
+            boolean hasDocuments = documents != null && documents.isArray() && !documents.isEmpty();
+
+            if (!hasDocuments) {
+                logger.warn("No documents found in mDoc VP.");
+                return;
+            }
+
+
+            JsonNode firstDoc = documents.get(0);
+            JsonNode issuerSigned = firstDoc.get("issuerSigned");
+            if (issuerSigned == null) return;
+
+            JsonNode nameSpaces = issuerSigned.get("nameSpaces");
+            if (nameSpaces == null) return;
+
+            // Check known namespaces
+            List<String> namespacesToCheck = List.of("eu.europa.ec.eudi.pid.1", "org.iso.18013.5.1");
+
+            for (String ns : namespacesToCheck) {
+                JsonNode nsData = nameSpaces.get(ns);
+                if (nsData == null) continue;
+                if (!nsData.isArray()) continue;
+
+                for (JsonNode item : nsData) {
+                    if (!item.isBinary()) continue;
+                    try {
+                        byte[] itemBytes = item.binaryValue();
+                        JsonNode itemNode = cborMapper.readTree(itemBytes);
+
+                        if (itemNode.has("elementIdentifier") && itemNode.has("elementValue")) {
+                            String key = itemNode.get("elementIdentifier").asText();
+                            String value = itemNode.get("elementValue").asText();
+                            logger.info("FOUND mDoc CLAIM: {} = {}", key, value);
+                            output.put(key, value);
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error parsing mDoc CBOR: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -455,5 +540,8 @@ public class VPService {
      */
     public Map<String, Object> getSessionStatus(String state) {
         return sessionStore.getOrDefault(state, Map.of("status", "NOT_FOUND"));
+    }
+
+    public record AuthRequestResult(String deepLink, String requestJwt, JWTClaimsSet claimsSet) {
     }
 }
